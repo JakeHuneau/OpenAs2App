@@ -110,15 +110,19 @@ public class XMLPartnershipFactory extends BasePartnershipFactory implements Has
     }
 
     void refreshConfig() throws OpenAS2Exception {
-        getSession().destroyPartnershipPollers(Session.PARTNERSHIP_POLLER);
+        Map<String, Object> newPartners = new HashMap<String, Object>();
+        List<Partnership> newPartnerships = new ArrayList<Partnership>();
+        /* Parse the whole file before touching the running pollers. Anything that goes wrong
+         * parsing then leaves the currently running configuration untouched rather than killing
+         * the pollers and aborting part way through the reload.
+         */
+        List<Node> pollerNodes = new ArrayList<Node>();
+        List<Partnership> pollerPartnerships = new ArrayList<Partnership>();
         try {
             Element root = getPartnershipsXml().getDocumentElement();
             NodeList rootNodes = root.getChildNodes();
             Node rootNode;
             String nodeName;
-
-            Map<String, Object> newPartners = new HashMap<String, Object>();
-            List<Partnership> newPartnerships = new ArrayList<Partnership>();
 
             for (int i = 0; i < rootNodes.getLength(); i++) {
                 rootNode = rootNodes.item(i);
@@ -126,18 +130,36 @@ public class XMLPartnershipFactory extends BasePartnershipFactory implements Has
                 nodeName = rootNode.getNodeName();
 
                 if (nodeName.equals("partner")) {
-                    loadPartner(newPartners, rootNode);
+                    loadPartner(newPartners, rootNode, false);
                 } else if (nodeName.equals("partnership")) {
-                    loadPartnership(newPartners, newPartnerships, rootNode);
+                    Partnership partnership = loadPartnership(newPartners, newPartnerships, rootNode, false);
+                    if (partnership != null) {
+                        pollerNodes.add(rootNode);
+                        pollerPartnerships.add(partnership);
+                    }
                 }
-            }
-
-            synchronized (this) {
-                setPartners(newPartners);
-                setPartnerships(newPartnerships);
             }
         } catch (Exception e) {
             throw new WrappedException(e);
+        }
+
+        synchronized (this) {
+            setPartners(newPartners);
+            setPartnerships(newPartnerships);
+        }
+
+        // The parsed config is good so now swap the pollers over to the new configuration
+        getSession().destroyPartnershipPollers(Session.PARTNERSHIP_POLLER);
+        for (int i = 0; i < pollerNodes.size(); i++) {
+            Partnership partnership = pollerPartnerships.get(i);
+            try {
+                setupPartnershipPoller(pollerNodes.get(i), partnership);
+            } catch (Exception e) {
+                /* A poller that cannot be configured must not prevent the rest of the partnerships
+                 * from having their pollers started so report it and keep going.
+                 */
+                logger.error("Failed to configure the directory poller for partnership " + partnership.getName() + ": " + org.openas2.util.Logging.getExceptionMsg(e), e);
+            }
         }
     }
 
@@ -149,13 +171,31 @@ public class XMLPartnershipFactory extends BasePartnershipFactory implements Has
     }
 
     public void loadPartner(Map<String, Object> partners, Node node) throws OpenAS2Exception {
+        loadPartner(partners, node, true);
+    }
+
+    /**
+     * Load a partner definition into the passed map of partners.
+     *
+     * @param partners          - the map of partners the loaded partner is added to
+     * @param node              - the XML node containing the partner definition
+     * @param failOnDuplicate   - if true a partner that is already defined causes an exception,
+     *                            otherwise the duplicate is logged as an error and ignored so that
+     *                            the first definition found remains in effect
+     * @throws OpenAS2Exception - the partner definition could not be loaded
+     */
+    public void loadPartner(Map<String, Object> partners, Node node, boolean failOnDuplicate) throws OpenAS2Exception {
         String[] requiredAttributes = {Partnership.PID_NAME};
 
         Map<String, String> newPartner = XMLUtil.mapAttributes(node, requiredAttributes);
         String name = newPartner.get(Partnership.PID_NAME);
 
         if (partners.get(name) != null) {
-            throw new OpenAS2Exception("Partner is defined more than once: " + name);
+            if (failOnDuplicate) {
+                throw new OpenAS2Exception("Partner is defined more than once: " + name);
+            }
+            logger.error("Partner is defined more than once in the partnerships file so the duplicate definition is ignored and the first one found is used: " + name);
+            return;
         }
 
         partners.put(name, newPartner);
@@ -191,6 +231,27 @@ public class XMLPartnershipFactory extends BasePartnershipFactory implements Has
     }
 
     public void loadPartnership(Map<String, Object> partners, List<Partnership> partnerships, Node node) throws OpenAS2Exception {
+        Partnership partnership = loadPartnership(partners, partnerships, node, true);
+        if (partnership != null) {
+            setupPartnershipPoller(node, partnership);
+        }
+    }
+
+    /**
+     * Load a partnership definition into the passed list of partnerships. This only parses the
+     * partnership. Use {@link #setupPartnershipPoller(Node, Partnership)} to activate any directory
+     * poller configured for it.
+     *
+     * @param partners          - the map of partners the partnership sender and receiver are looked up in
+     * @param partnerships      - the list of partnerships the loaded partnership is added to
+     * @param node              - the XML node containing the partnership definition
+     * @param failOnDuplicate   - if true a partnership that is already defined causes an exception,
+     *                            otherwise the duplicate is logged as an error and ignored so that
+     *                            the first definition found remains in effect
+     * @return the loaded partnership or null if it was ignored as a duplicate
+     * @throws OpenAS2Exception - the partnership definition could not be loaded
+     */
+    public Partnership loadPartnership(Map<String, Object> partners, List<Partnership> partnerships, Node node, boolean failOnDuplicate) throws OpenAS2Exception {
         Partnership partnership = new Partnership();
         String[] requiredAttributes = {"name"};
 
@@ -198,7 +259,11 @@ public class XMLPartnershipFactory extends BasePartnershipFactory implements Has
         String name = psAttributes.get("name");
 
         if (getPartnership(partnerships, name) != null) {
-            throw new OpenAS2Exception("Partnership is defined more than once: " + name);
+            if (failOnDuplicate) {
+                throw new OpenAS2Exception("Partnership is defined more than once: " + name);
+            }
+            logger.error("Partnership is defined more than once in the partnerships file so the duplicate definition is ignored and the first one found is used: " + name);
+            return null;
         }
 
         partnership.setName(name);
@@ -220,7 +285,21 @@ public class XMLPartnershipFactory extends BasePartnershipFactory implements Has
         }
         // add the partnership to the list of available partnerships
         partnerships.add(partnership);
-        
+
+        return partnership;
+    }
+
+    /**
+     * Activate the directory polling module configured for a partnership, if there is one.
+     * Any poller currently running for the partnership must have been destroyed before calling
+     * this otherwise the polled directory will be rejected as already in use.
+     *
+     * @param node          - the XML node containing the partnership definition
+     * @param partnership   - the partnership the poller belongs to
+     * @throws OpenAS2Exception - the poller could not be configured
+     */
+    public void setupPartnershipPoller(Node node, Partnership partnership) throws OpenAS2Exception {
+        String name = partnership.getName();
         // Now check if we need to add a directory polling module
         Node pollerCfgNode = XMLUtil.findChildNode(node, Partnership.PCFG_POLLER);
         if (pollerCfgNode != null) {
