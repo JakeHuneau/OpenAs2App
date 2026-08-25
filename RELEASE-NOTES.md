@@ -16,6 +16,7 @@ Version 4.9.2
 This is a minor bugfix release.
 1. Message tracking events are now persisted in the order they were generated. Each event was previously written on its own thread so an earlier state such as "msg_send_start" could overwrite a later one such as "msg_sent_mdn_received_ok", silently leaving the tracking record showing a stale state.
 2. A failure storing the MDN no longer prevents the final message state being tracked, and is now logged.
+3. Documented the indexing requirements for the msg_metadata.msg_id column in db_ddl.sql. The tracking record lookup binds the message ID as a string parameter, so the column must be a bounded string type carrying the msg_id_unique index, and the driver must bind string parameters as the same type as the column. If they differ the server converts the column instead of the parameter, the index becomes unusable and every tracked event scans the whole table. This is configured per driver in msg_tracking.jdbc_connect_string, for example sendStringParametersAsUnicode=false for SQL Server/Azure SQL against VARCHAR columns. See the Upgrade Notes below.
 
 
 Version 4.9.1 - 2026-08-09
@@ -32,6 +33,11 @@ This is a minor bugfix release.
  Below are some specific things to focus on depending on which version you are upgrading from.
 
  **You must review all notes for the relevant intermediate versions from your version to this release version.**
+
+### Upgrading to 4.9.2 or newer from any older version if using an external database for message state tracking:
+      1. Check that the msg_metadata.msg_id column is a bounded string type (not TEXT, CLOB or VARCHAR(MAX)) and that the msg_id_unique index exists on it. The tracking record lookup runs for every tracked event of every message, so an unindexed column scans the whole table each time.
+      2. Check that your JDBC driver binds string parameters as the same type as that column. Where they differ the database converts the column rather than the parameter and ignores the index. For SQL Server/Azure SQL with a VARCHAR column, add sendStringParametersAsUnicode=false to msg_tracking.jdbc_connect_string. After changing this, clear the cached plan for the tracking lookup so the server stops reusing the scan plan.
+      3. There is no automatic purge of msg_metadata. If the table has grown large, consider a retention job, as every tracking lookup gets more expensive as it grows.
 
 ### Upgrading to 4.6.1 or newer from any older version if using parallel processing mode:
       1. Ensure you change the property for enabling parallel mode by removing the 3rd consecutive "l" from "process_files_in_paralllel".

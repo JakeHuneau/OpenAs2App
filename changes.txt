@@ -6,6 +6,7 @@ Version 4.9.2
 This is a minor bugfix release.
 1. Persist message tracking events in the order they were generated so an earlier state cannot overwrite a later one.
 2. A failure storing the MDN no longer prevents the final message state being tracked, and is now logged.
+3. Document the indexing and JDBC string parameter binding requirements for the msg_metadata.msg_id column. A mismatch between the bound parameter type and the column type makes the index unusable so every tracked event scans the table.
 
 
 Version 4.9.1 - 2026-08-09

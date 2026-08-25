@@ -10,6 +10,21 @@ DROP TABLE msg_metadata IF EXISTS;
 -- -----------------------------------------------------------------------
 -- msg_metadata
 -- -----------------------------------------------------------------------
+-- Every tracked event of every message looks the row up by MSG_ID, and the
+-- lookup binds the value as a string parameter. Two things have to hold on
+-- whichever database you use, or that lookup scans the whole table on every
+-- event and comes to dominate database CPU as the table grows:
+--   * MSG_ID must be a bounded string type that can carry the unique index
+--     below. An unbounded type (TEXT, CLOB, VARCHAR(MAX)) cannot be indexed
+--     on several platforms. Note that MSG_ID contains the payload file name,
+--     so size it for the longest file name a partner sends plus roughly 60
+--     characters.
+--   * The string type the JDBC driver binds must match the column type, so
+--     that the server converts the parameter rather than the column. A
+--     mismatch silently makes the index unusable. Drivers that default to
+--     Unicode parameters need this configured in the connect string, for
+--     example sendStringParametersAsUnicode=false for SQL Server/Azure SQL
+--     against VARCHAR columns.
 
 CREATE TABLE msg_metadata
 (
