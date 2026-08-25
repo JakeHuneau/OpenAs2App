@@ -10,6 +10,14 @@ The zip file contains a PDF document (OpenAS2HowTo.pdf) providing information on
 ## NOTE: Testing covers Java 11 to 21.
 ##       Java 8 is NO LONGER SUPPORTED.
 
+Version 4.9.2
+===========================
+
+This is a minor bugfix release.
+1. Message tracking events are now persisted in the order they were generated. Each event was previously written on its own thread so an earlier state such as "msg_send_start" could overwrite a later one such as "msg_sent_mdn_received_ok", silently leaving the tracking record showing a stale state.
+2. A failure storing the MDN no longer prevents the final message state being tracked, and is now logged.
+
+
 Version 4.9.1 - 2026-08-09
 ===========================
 

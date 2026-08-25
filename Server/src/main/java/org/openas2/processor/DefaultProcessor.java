@@ -65,7 +65,8 @@ public class DefaultProcessor extends BaseComponent implements Processor {
         if (pex != null) {
             throw pex;
         } else if (!moduleFound) {
-            if ("true".equalsIgnoreCase((String) options.get("OPTIONAL_MODULE"))) {
+            // Callers are allowed to pass null options so do not dereference it blindly
+            if (options != null && "true".equalsIgnoreCase((String) options.get("OPTIONAL_MODULE"))) {
                 return;
             }
             msg.setLogMsg("No handler found for action: " + action);

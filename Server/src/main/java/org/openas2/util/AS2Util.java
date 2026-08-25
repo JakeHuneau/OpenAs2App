@@ -610,8 +610,14 @@ public class AS2Util {
         }
 
         // Store the MDN before tracking the state so the stored MDN file path is captured in the
-        // tracking record.
-        session.getProcessor().handle(StorageModule.DO_STOREMDN, msg, null);
+        // tracking record. Failing to store the MDN must not prevent the final state being tracked
+        // otherwise the tracking record is left showing the message as still being sent.
+        try {
+            session.getProcessor().handle(StorageModule.DO_STOREMDN, msg, null);
+        } catch (Exception e) {
+            msg.setLogMsg("Failed to store the received MDN. The message was sent and the MDN was received successfully but the MDN file path will not be recorded: " + org.openas2.util.Logging.getExceptionMsg(e));
+            logger.error(msg.getLogMsg(), e);
+        }
         msg.trackMsgState(session);
         msg.setStatus(Message.MSG_STATUS_MSG_CLEANUP);
         // To support extended reporting via logging log info passing Message object

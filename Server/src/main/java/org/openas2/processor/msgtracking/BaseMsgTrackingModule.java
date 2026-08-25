@@ -12,23 +12,65 @@ import org.openas2.message.MessageMDN;
 import org.openas2.partner.Partnership;
 import org.openas2.processor.BaseProcessorModule;
 import org.openas2.processor.resender.ResenderModule;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 
 public abstract class BaseMsgTrackingModule extends BaseProcessorModule implements TrackingModule {
+
+    /*
+     * Tracking events are persisted off the message processing thread so that a slow tracking
+     * database cannot hold up sending or receiving. A single threaded executor is used rather than
+     * a thread per event because the events for a message must be written in the order they were
+     * generated: each event is persisted as an update of the same row keyed on the message ID, so
+     * an event that is written out of sequence overwrites the state of a later one. That corruption
+     * is silent since both writes succeed at the database level.
+     */
+    private final ExecutorService persistExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread t = new Thread(runnable, "OpenAS2 message tracking");
+        t.setDaemon(false);
+        return t;
+    });
 
     public void handle(String action, Message msg, Map<String, Object> options) throws OpenAS2Exception {
 
         Map<String, String> fields = buildMap(msg, options);
-        new Thread(() -> {
-        persist(msg, fields);
-        }).start();
+        try {
+            persistExecutor.execute(() -> persist(msg, fields));
+        } catch (RejectedExecutionException e) {
+            // Shutting down so persist on the calling thread rather than lose the event
+            persist(msg, fields);
+        }
 
     }
 
     public void init(Session session, Map<String, String> options) throws OpenAS2Exception {
         super.init(session, options);
+    }
+
+    /**
+     * Stops accepting new tracking events and waits a short while for the queued ones to be
+     * written. Must be called by implementations when the module is stopped.
+     */
+    protected void shutdownPersistExecutor() {
+        persistExecutor.shutdown();
+        try {
+            if (!persistExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                Logger logger = LoggerFactory.getLogger(BaseMsgTrackingModule.class);
+                logger.warn("Timed out waiting for pending message tracking events to be persisted."
+                        + " Some tracking records may be incomplete.");
+                persistExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            persistExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     /** TODO: Remove this when module config enforces setting the action so that the super method does all the work

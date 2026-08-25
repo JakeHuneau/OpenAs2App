@@ -122,8 +122,14 @@ public class MDNSenderModule extends HttpSenderModule {
                 }
             }
         }
-        // Save sent MDN for later examination
-        getSession().getProcessor().handle(StorageModule.DO_STOREMDN, msg, null);
+        // Save sent MDN for later examination. A storage failure must not stop the re-track below
+        // otherwise the tracking record is left showing an intermediate state for the message.
+        try {
+            getSession().getProcessor().handle(StorageModule.DO_STOREMDN, msg, null);
+        } catch (Exception e) {
+            msg.setLogMsg("Failed to store the sent MDN. The MDN file path will not be recorded: " + org.openas2.util.Logging.getExceptionMsg(e));
+            logger.error(msg.getLogMsg(), e);
+        }
         // Re-track now that the MDN has been stored so the stored MDN file path is recorded
         msg.trackMsgState(getSession());
         if (logger.isInfoEnabled()) {
